@@ -1,7 +1,5 @@
 //main
 #include<stdio.h>
-#include "cliente.c"
-#include "servidor.c"
 #include <unistd.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -9,10 +7,15 @@
 
 void criaPipes();
 void contaTempo();
+void servidor(int writefd,int readfd);
+int cliente(int readfd,int writefd);
+
+int writefd,readfd;
 
 int finalizado = 0;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutecao = PTHREAD_MUTEX_INITIALIZER;
 
 int main(){
         pthread_t thread1,thread2;
@@ -69,25 +72,122 @@ void criaPipes(){
 }
 
 void contaTempo(){
-    clock_t start_t, end_t;
-    double total_t;
+    struct timespec start, end;
 
-    start_t = clock(); 
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
-    while(1){
-      pthread_mutex_lock(&mutex);
-      if(finalizado){
+    // Espera até a outra thread sinalizar que terminou
+    while (1) {
+        pthread_mutex_lock(&mutex);
+        if (finalizado) {
+            pthread_mutex_unlock(&mutex);
+            break;
+        }
         pthread_mutex_unlock(&mutex);
-        break;
-      }
-      pthread_mutex_unlock(&mutex);
-      usleep(10000);
+
+        usleep(10000); // dorme 10 ms para não consumir CPU
     }
 
-    end_t = clock(); 
+    clock_gettime(CLOCK_MONOTONIC, &end);
 
-    total_t = (double)(end_t - start_t) / CLOCKS_PER_SEC;
 
-    printf("Tempo de execução: %f segundos\n", total_t);
-    pthread_exit(NULL);
+    double tempo_total = (end.tv_sec - start.tv_sec) +
+                         (end.tv_nsec - start.tv_nsec) / 1e9;
+
+    printf("Tempo total de execução: %.2f segundos\n", tempo_total);
+
+    return NULL;
+}
+
+int writefd,readfd;
+
+void servidor(int writefd,int readfd){
+  char mensagem[1000], resposta[1000],operacao[10];
+  int saldo = 100000; //praticando boas práticas de DB que aprendi na internet, isso aqui são 100000 centavos, que será dividido por 100 para representar o valor em real
+  int valor;
+  
+  while(1){
+    pthread_mutex_lock(&mutecao);
+    read(readfd, mensagem, sizeof(mensagem));
+    sscanf(mensagem,"%[^:]:%d",operacao,&valor);
+    pthread_mutex_unlock(&mutecao);
+    
+    if (strcmp(operacao,"SAQUE") ==0){
+      if(saldo >= valor*100){
+        saldo = saldo - (valor*100);
+        
+        pthread_mutex_lock(&mutecao);
+        sprintf(resposta,"Saque aprovado, Saldo restante = %d\n",(saldo/100));
+        pthread_mutex_unlock(&mutecao);
+      }else{
+        pthread_mutex_lock(&mutecao);
+        sprintf(resposta,"Saque negado, voce nao tem saldo suficiente, saldo atual = %d\n",saldo/100);
+        pthread_mutex_unlock(&mutecao);
+      }
+    }else if(strcmp(operacao,"DEPOSITO")==0){
+      saldo = saldo + (valor*100);
+      pthread_mutex_lock(&mutecao);
+      sprintf(resposta,"Deposito Concluido, seu saldo agora e = %d\n",(saldo/100));
+      pthread_mutex_unlock(&mutecao);
+      }
+      
+  pthread_mutex_lock(&mutecao);
+  write(writefd,resposta,strlen(resposta)+1);
+  pthread_mutex_unlock(&mutecao);
+  }
+}
+
+int cliente(int readfd,int writefd){
+  char clientRequest[30], mensagem[100],resposta[100];
+  int valor;
+  
+  while(1){
+  printf("Digite aqui qual operaçao voce deseja fazer: ");
+  scanf("%s",clientRequest);
+  
+    if(strcmp(clientRequest,"saque")==0){
+      printf("Quanto voce deseja sacar ?: ");
+      pthread_mutex_lock(&mutecao);
+      scanf("%d",&valor);
+      pthread_mutex_unlock(&mutecao);
+      
+      pthread_mutex_lock(&mutecao);
+      sprintf(mensagem,"SAQUE:%d",valor);
+      pthread_mutex_unlock(&mutecao);
+      
+      pthread_mutex_lock(&mutecao);
+      write(writefd,mensagem,strlen(mensagem)+1);
+      pthread_mutex_unlock(&mutecao);
+      printf("\nAguardando a solicitacao de saque ser aceita...\n");
+      sleep(1);
+      
+      pthread_mutex_lock(&mutecao);
+      read(readfd,resposta,sizeof(resposta));
+      pthread_mutex_unlock(&mutecao);
+      printf("%s\n",resposta);
+    }else if(strcmp(clientRequest,"deposito") == 0){
+      printf("Quanto voce deseja depositar ?: ");
+      pthread_mutex_lock(&mutecao);
+      scanf("%d",&valor);
+      pthread_mutex_unlock(&mutecao);
+      
+      pthread_mutex_lock(&mutecao);
+      sprintf(mensagem,"DEPOSITO:%d",valor);
+      pthread_mutex_unlock(&mutecao);
+      
+      pthread_mutex_lock(&mutecao);
+      write(writefd,mensagem,strlen(mensagem)+1);
+      pthread_mutex_unlock(&mutecao);
+      printf("\nAguardando a solicitacao de deposito ser aceita...\n");
+      
+      pthread_mutex_lock(&mutecao);
+      read(readfd,resposta,sizeof(resposta));
+      pthread_mutex_unlock(&mutecao);
+      printf("%s\n",resposta);
+    }else if(strcmp(clientRequest,"sair")==0){
+      pthread_exit(NULL);
+    }
+  }
+  
+  return 1;
 }
